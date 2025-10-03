@@ -20,7 +20,7 @@ class CraftaxSurvivalGym(gym.Env):
     def __init__(self, env_id: str = "craftax-classic-v1", R_reset: int = 50, seed: int = 0):
         assert make_craftax is not None, "Install craftax to use CraftaxSurvivalGym."
         self.R_reset = R_reset
-        self.key = jax.random.PRNGKey(seed)
+        self.key = jax.random.PRNGKey(int(seed))
         self.env, self.params = make_craftax(env_id)
         self.state = None
         # Do a dummy reset to infer spaces

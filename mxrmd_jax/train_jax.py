@@ -1,5 +1,7 @@
 from __future__ import annotations
 import argparse, os, time
+from contextlib import contextmanager
+from functools import partial
 import numpy as np
 import jax, jax.numpy as jnp
 from flax.core.frozen_dict import freeze
@@ -7,15 +9,60 @@ from flax.training.train_state import TrainState
 import optax
 from tqdm import tqdm
 
+from typing import Dict
+
 from mxrmd_jax.driver.model_flax import GRUAC
 from mxrmd_jax.driver.avg_reward_ac import ACState, build_optim, update
 from mxrmd_jax.logging.rlds_jsonl import RLDSWriter, Step
 
-# Gymnax/Craftax imports (optional)
-try:
-    from craftax import make_craftax_env_from_name
-except Exception:
-    make_craftax_env_from_name = None
+
+def _load_craftax_factory():
+    """Return Craftax's environment factory, handling versioned import paths."""
+
+    try:  # Craftax <= 1.4 shipped the factory at the package root.
+        from craftax import make_craftax_env_from_name  # type: ignore
+
+        return make_craftax_env_from_name
+    except ImportError:
+        try:  # Craftax >= 1.5 moves the helper into craftax.craftax_env.
+            from craftax.craftax_env import make_craftax_env_from_name  # type: ignore
+
+            return make_craftax_env_from_name
+        except Exception:  # fall through to unified assertion downstream
+            return None
+
+
+make_craftax_env_from_name = _load_craftax_factory()
+
+_CRAFTAX_ENV_ALIASES: Dict[str, str] = {
+    "craftax-classic-v1": "Craftax-Classic-Pixels-v1",
+    "craftax-classic-pixels-v1": "Craftax-Classic-Pixels-v1",
+    "craftax-classic-symbolic-v1": "Craftax-Classic-Symbolic-v1",
+    "craftax-pixels-v1": "Craftax-Pixels-v1",
+    "craftax-symbolic-v1": "Craftax-Symbolic-v1",
+}
+
+
+def _cpu_device():
+    try:
+        return next(dev for dev in jax.devices() if dev.platform == "cpu")
+    except (RuntimeError, StopIteration):  # no CPU backend registered
+        return None
+
+
+@contextmanager
+def _cpu_scope():
+    cpu = _cpu_device()
+    if cpu is None:
+        yield
+    else:
+        with jax.default_device(cpu):
+            yield
+
+
+def _cpu_key(seed: int):
+    with _cpu_scope():
+        return jax.random.PRNGKey(int(seed))
 
 def parse_args():
     p = argparse.ArgumentParser()
@@ -32,8 +79,19 @@ def parse_args():
     p.add_argument('--run-dir', type=str, default='runs/latest')
     return p.parse_args()
 
+def _canonical_craftax_env_id(env_id: str) -> str:
+    alias = _CRAFTAX_ENV_ALIASES.get(env_id)
+    if alias is not None:
+        return alias
+    alias = _CRAFTAX_ENV_ALIASES.get(env_id.lower())
+    if alias is not None:
+        return alias
+    return env_id
+
+
 def make_survival_env(env_id: str, r_reset: int):
-    env = make_craftax_env_from_name(env_id, auto_reset=True)
+    env_name = _canonical_craftax_env_id(env_id)
+    env = make_craftax_env_from_name(env_name, auto_reset=True)
     params = env.default_params
 
     def reset_fn(key):
@@ -64,8 +122,11 @@ def main():
     args = parse_args()
     os.makedirs(args.run_dir, exist_ok=True)
 
-    assert make_craftax_env_from_name is not None, "Install craftax>=1.5 and import make_craftax_env_from_name."
-    key = jax.random.PRNGKey(args.seed)
+    assert make_craftax_env_from_name is not None, (
+        "Install craftax>=1.5.0 so `make_craftax_env_from_name` is available; "
+        "project requirements are declared in requirements.txt."
+    )
+    key = _cpu_key(args.seed)
     reset_fn, step_fn, params, env = make_survival_env(args.env_id, args.r_reset)
 
     # Vectorize over num_envs
@@ -73,26 +134,30 @@ def main():
     v_step = jax.vmap(step_fn, in_axes=((0, 0, 0, 0), 0))
 
     # Reset batch
-    keys = jax.random.split(key, args.num_envs)
+    with _cpu_scope():
+        keys = jax.random.split(key, args.num_envs)
     carry, obs0 = v_reset(keys)
 
     # Model init
     num_actions = env.action_space(params).n
     model = GRUAC(num_actions=num_actions)
-    params_init = model.init(jax.random.PRNGKey(args.seed+123), obs0, jnp.zeros((args.num_envs, 256)))['params']
+    with _cpu_scope():
+        params_init = model.init(_cpu_key(args.seed + 123), obs0, jnp.zeros((args.num_envs, 256)))['params']
     opt = build_optim(args.lr)
     opt_state = opt.init(params_init)
     state = ACState(params_init, jnp.zeros((args.num_envs, 256)), opt_state, jnp.array(0.0), key)
 
-    @jax.jit(donate_argnums=(0, 1))
+    @partial(jax.jit, donate_argnums=(0, 1))
     def rollout_update(state: ACState, carry):
         # carry = (state_env, reset_phase, key, obs_t)
         def one_step(carry, _):
             st, rp, k, obs_t, h_t = carry
             logits, v, h1 = model.apply({'params': state.params}, obs_t, h_t)
-            k, k2 = jax.random.split(k)
-            a = jax.random.categorical(k, logits, axis=-1)
-            (st1, rp1, k3, obs_next), (obs_out, rew, done) = v_step((st, rp, k2, obs_t), a)
+            k_action_env = jax.vmap(lambda kk: jax.random.split(kk, 2))(k)
+            k_action = k_action_env[:, 0]
+            k_env = k_action_env[:, 1]
+            a = jax.vmap(lambda kk, lg: jax.random.categorical(kk, lg, axis=-1))(k_action, logits)
+            (st1, rp1, k3, obs_next), (obs_out, rew, done) = v_step((st, rp, k_env, obs_t), a)
             return (st1, rp1, k3, obs_next, h1), (obs_out, a, rew, done, logits, v)
 
         st, rp, k, obs0 = carry
