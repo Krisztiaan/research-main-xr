@@ -1,0 +1,17 @@
+# Core JAX stack
+jax>=0.4.30
+flax>=0.8.2
+optax>=0.2.3
+chex>=0.1.86
+
+# Env APIs
+gymnasium>=0.29.1
+
+# JAX envs (vectorized)
+gymnax>=0.0.8
+craftax>=0.1.3
+
+# Logging
+orjson>=3.10.0
+numpy>=1.26
+tqdm>=4.66
