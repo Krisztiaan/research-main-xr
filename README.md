@@ -1,5 +1,7 @@
 # MAIN-XR-MD Phase-0 (JAX): Average-Reward Actor–Critic + Gymnasium outward, Gymnax/Craftax inward
 
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/krisztiaan/research-main-xr/blob/main/index.ipynb)
+
 This repo implements the first logical experiments with a **JAX/Flax** driver, **Gymnasium** outward API,
 **Gymnax/Craftax** inner stepping, and **RLDS-lite JSONL** logging. It is estimator-correct for average reward and
 designed for high throughput (JIT + vmap + scan).
@@ -18,6 +20,13 @@ python -m mxrmd_jax.eval_gym --env craftax --env-id craftax-classic-v1 --episode
 
 Lower-case `craftax-*` environment identifiers are normalised automatically to Craftax 1.5's canonical `Craftax-*` names, so older scripts continue to run.
 
+## Colab
+- Click the badge above to open `index.ipynb` in Google Colab.
+- Choose hardware under Runtime → Change runtime type (GPU/TPU/None).
+- Run the first “Backend and Options” cell; leave `BACKEND='auto'` or choose explicitly.
+- Keep `WITH_T5` off unless you want the optional Flax T5 demo.
+- The notebook installs dependencies dynamically and runs a short smoke test.
+
 ## Python Environment (pyenv)
 - Install a CPython 3.11 build: `pyenv install 3.11.9`
 - Pin the project: `pyenv local 3.11.9` (a `.python-version` file is already checked in)
@@ -26,7 +35,7 @@ Lower-case `craftax-*` environment identifiers are normalised automatically to C
 
 ## Remote Accelerators (CUDA / TPU)
 - Provision a Linux machine with the accelerator you need (e.g. AWS g5, GCP A2, TPU VM).
-- Install JAX with the matching backend wheels, for example CUDA 12: `pip install --upgrade "jax[cuda12_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html`
+- Install JAX with the matching backend wheels, for example CUDA 12: `pip install --upgrade "jax[cuda12_pip]>=0.7.2" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html`
 - TPU VMs ship with a preconfigured jaxlib; upgrade with `pip install --upgrade jax[tpu]>=0.4.30 -f https://storage.googleapis.com/jax-releases/libtpu_releases.html`.
 - Reuse the same training command; attach your experiment storage via NFS/GCS/S3 as needed.
 - Destroy the VM or pod when the run finishes to keep the “rented as you go” cost model.
